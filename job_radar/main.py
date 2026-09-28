@@ -7,7 +7,7 @@ from .config import load_config
 from .dedup import SeenStore
 from .export import build_workbook, save_workbook
 from .models import JobListing
-from .notifier import format_top10_message, send_document, send_message
+from .notifier import format_messages, send_document, send_message
 from .scoring import score_listing
 from .sources.base import Scraper
 
@@ -37,11 +37,12 @@ def run(sources: list[Scraper]) -> None:
     save_workbook(workbook, EXPORT_PATH)
 
     top_ranked = [(listing, max(results, key=lambda r: r.score)) for listing, results in scored]
-    message = format_top10_message(top_ranked)
+    messages = format_messages(top_ranked)
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    send_message(token, chat_id, message)
+    for message in messages:
+        send_message(token, chat_id, message)
     send_document(token, chat_id, str(EXPORT_PATH), caption="Avisos nuevos de hoy, por perfil")
 
     for listing in new_listings:

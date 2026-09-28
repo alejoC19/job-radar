@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, mock_open, patch
 
 from job_radar.models import JobListing, ScoreResult
-from job_radar.notifier import format_top10_message, send_document, send_message
+from job_radar.notifier import format_messages, send_document, send_message
 
 
 def make_listing(**overrides) -> JobListing:
@@ -10,42 +10,63 @@ def make_listing(**overrides) -> JobListing:
     return JobListing(**defaults)
 
 
-def test_format_top10_message_includes_title_company_score_link():
+def test_format_messages_includes_title_company_score_link():
     listing = make_listing(title="QA Automation Engineer", company="Acme")
     result = ScoreResult(profile_key="qa", profile_name="QA Automation", score=9)
 
-    message = format_top10_message([(listing, result)])
+    messages = format_messages([(listing, result)])
 
-    assert "QA Automation Engineer" in message
-    assert "Acme" in message
-    assert "9" in message
-    assert "QA Automation" in message
-    assert listing.url in message
+    assert len(messages) == 1
+    assert "QA Automation Engineer" in messages[0]
+    assert "Acme" in messages[0]
+    assert "9" in messages[0]
+    assert "QA Automation" in messages[0]
+    assert listing.url in messages[0]
 
 
-def test_format_top10_message_includes_salary_when_present():
+def test_format_messages_includes_salary_when_present():
     listing = make_listing(salary_text="$500.000 - $700.000")
     result = ScoreResult(profile_key="qa", profile_name="QA Automation", score=9)
 
-    message = format_top10_message([(listing, result)])
-    assert "$500.000 - $700.000" in message
+    messages = format_messages([(listing, result)])
+    assert "$500.000 - $700.000" in messages[0]
 
 
-def test_format_top10_message_limits_to_ten():
+def test_format_messages_includes_every_listing_not_just_top_ten():
     pairs = [
         (make_listing(title=f"Aviso {i}", url=f"https://example.com/{i}"), ScoreResult("qa", "QA", i))
-        for i in range(15)
+        for i in range(35)
     ]
-    message = format_top10_message(pairs)
-    assert message.count("https://example.com/") == 10
+    messages = format_messages(pairs)
+    assert sum(m.count("https://example.com/") for m in messages) == 35
 
 
-def test_format_top10_message_escapes_html_special_chars():
+def test_format_messages_splits_into_multiple_messages_when_too_long():
+    pairs = [
+        (make_listing(title=f"Aviso con un titulo bastante largo numero {i}", url=f"https://example.com/{i}"),
+         ScoreResult("qa", "QA", i))
+        for i in range(60)
+    ]
+    messages = format_messages(pairs)
+
+    assert len(messages) > 1
+    for message in messages:
+        assert len(message) <= 4096
+    assert "parte 1/" in messages[0]
+
+
+def test_format_messages_returns_friendly_message_when_no_listings():
+    messages = format_messages([])
+    assert len(messages) == 1
+    assert "No hay avisos nuevos" in messages[0]
+
+
+def test_format_messages_escapes_html_special_chars():
     listing = make_listing(title="QA <Senior> & Tester")
     result = ScoreResult(profile_key="qa", profile_name="QA Automation", score=9)
-    message = format_top10_message([(listing, result)])
-    assert "<Senior>" not in message
-    assert "&lt;Senior&gt;" in message
+    messages = format_messages([(listing, result)])
+    assert "<Senior>" not in messages[0]
+    assert "&lt;Senior&gt;" in messages[0]
 
 
 @patch("job_radar.notifier.requests.post")
