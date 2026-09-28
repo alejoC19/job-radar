@@ -12,9 +12,13 @@ automáticamente: solo filtra y avisa.
 - [x] Dedup de avisos ya vistos (`job_radar/dedup.py`)
 - [x] Export a Excel con una hoja por perfil (`job_radar/export.py`)
 - [x] Envío del mensaje diario + Excel adjunto por Telegram (`job_radar/notifier.py`, `job_radar/main.py`)
-- [ ] Scrapers reales: Computrabajo Argentina + Bumeran (interfaz lista en
-      `job_radar/sources/`, bloqueado por acceso de red del entorno de dev —
-      ver más abajo)
+- [x] Scraper de Computrabajo Argentina (`job_radar/sources/computrabajo.py`):
+      parsea el HTML de busqueda (`ar.computrabajo.com/trabajo-de-{keyword}`,
+      no hay API publica)
+- [x] Scraper de Bumeran Argentina (`job_radar/sources/bumeran.py`): el sitio
+      es una SPA de React sin HTML util, pero el frontend llama a una API
+      JSON interna (`POST /api/avisos/searchV2` con header `x-site-id: BMAR`)
+      que se consume directo con `requests`
 - [ ] Workflow con cron (9 y 18 hs Argentina)
 
 Fuentes: se descartó Get on Board (no lo usa el dueño del proyecto) y
@@ -22,13 +26,11 @@ LinkedIn (su `robots.txt` prohíbe rastrear resultados de búsqueda de
 empleo y su ToS prohíbe el scraping). Se usan Computrabajo Argentina y
 Bumeran, con la misma interfaz intercambiable para sumar más después.
 
-### Bloqueo de red en desarrollo
-
-El entorno donde se desarrolla este proyecto no tiene salida a
-`computrabajo.com.ar` ni `bumeran.com.ar`, así que los scrapers reales
-todavía no se escribieron contra HTML real. Para destrabar: ampliar el
-acceso de red del entorno, o pasar HTML de ejemplo de un par de avisos de
-cada sitio para armar el parser y los fixtures de test sobre eso.
+Ambos scrapers buscan por un set fijo de terminos que cubre los 3 perfiles
+(`SEARCH_TERMS` en `job_radar/sources/base.py`: "qa automation", "tester",
+"desarrollador", "analista contable"), paginan hasta `max_pages` (2 por
+default) y dedupean por URL. El scoring de `job_radar/scoring.py` es el que
+despues decide, aviso por aviso, si es relevante para cada perfil.
 
 ## Setup local
 
@@ -49,5 +51,6 @@ Este repo necesita, en Settings → Secrets and variables → Actions →
 ## Arquitectura
 
 Ver `job_radar/` para el paquete Python. Cada fuente de avisos implementa
-la interfaz de `job_radar/sources/base.py` (cuando exista), para poder
-sumar sitios nuevos sin tocar el resto del código.
+la interfaz `Scraper` de `job_radar/sources/base.py` (un `fetch()` que
+devuelve `list[JobListing]`), para poder sumar sitios nuevos sin tocar el
+resto del código.
