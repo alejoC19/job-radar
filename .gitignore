@@ -12,6 +12,11 @@ __pycache__/
 # Playwright
 node_modules/
 
+# Export diario (se manda por Telegram, no hace falta versionarlo).
+# data/seen.json SI se versiona: lo persiste el workflow de cron para
+# no repetir avisos ya notificados entre corridas.
+data/avisos_del_dia.xlsx
+
 # OS / editor
 .DS_Store
 .vscode/

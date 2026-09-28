@@ -1,0 +1,31 @@
+{
+  "number": 0,
+  "size": 20,
+  "total": 2,
+  "content": [
+    {
+      "id": 1118391216,
+      "titulo": "Desarrollador/a de Software Jr",
+      "detalle": "Buscamos Desarrollador/a Jr para sumarse al equipo. Requisitos: Experiencia en .NET Core y React.",
+      "idEmpresa": 13046757,
+      "empresa": "HIPODROMO PALERMO",
+      "confidencial": false,
+      "fechaPublicacion": "25-09-2026",
+      "localizacion": "Capital Federal, Buenos Aires",
+      "modalidadTrabajo": "Híbrido",
+      "tipoTrabajo": "Full-time"
+    },
+    {
+      "id": 1118400001,
+      "titulo": "Analista Contable Semi Senior",
+      "detalle": "Empresa confidencial busca Analista Contable. Se ofrece $ 900.000 - $ 1.100.000 segun experiencia.",
+      "idEmpresa": null,
+      "empresa": "Confidencial",
+      "confidencial": true,
+      "fechaPublicacion": "26-09-2026",
+      "localizacion": "GBA Norte",
+      "modalidadTrabajo": "Remoto",
+      "tipoTrabajo": "Full-time"
+    }
+  ]
+}
