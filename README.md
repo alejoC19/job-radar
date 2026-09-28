@@ -19,7 +19,7 @@ automáticamente: solo filtra y avisa.
       es una SPA de React sin HTML util, pero el frontend llama a una API
       JSON interna (`POST /api/avisos/searchV2` con header `x-site-id: BMAR`)
       que se consume directo con `requests`
-- [ ] Workflow con cron (9 y 18 hs Argentina)
+- [x] Workflow con cron (9 y 18 hs Argentina, `.github/workflows/job-radar-cron.yml`)
 
 Fuentes: se descartó Get on Board (no lo usa el dueño del proyecto) y
 LinkedIn (su `robots.txt` prohíbe rastrear resultados de búsqueda de
@@ -47,6 +47,20 @@ Este repo necesita, en Settings → Secrets and variables → Actions →
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+
+## Corrida automática
+
+`.github/workflows/job-radar-cron.yml` corre el bot todos los días a las
+9 y 18 hs de Argentina (`cron: "0 12,21 * * *"`, UTC-3 fijo todo el año) y
+también se puede disparar a mano desde Actions → Job Radar - Corrida diaria
+→ Run workflow.
+
+Como los runners de GitHub Actions son efímeros, `data/seen.json` (los
+avisos ya notificados) se versiona en el repo: el workflow lo commitea de
+vuelta después de cada corrida con avisos nuevos, para no repetir avisos
+entre una corrida y la siguiente. `data/avisos_del_dia.xlsx` no se versiona
+(está en `.gitignore`): es un export descartable que se manda por Telegram
+en cada corrida.
 
 ## Arquitectura
 
