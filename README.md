@@ -8,10 +8,27 @@ automáticamente: solo filtra y avisa.
 
 - [x] Workflow de prueba de Telegram (`.github/workflows/job-radar-test.yml`)
 - [x] Scoring de avisos contra los 3 perfiles + tests (`job_radar/scoring.py`)
-- [ ] Scrapers (Get on Board, Computrabajo)
-- [ ] Dedup de avisos ya vistos
-- [ ] Armado y envío del mensaje diario
+- [x] Extracción de sueldo por regex (`job_radar/salary.py`)
+- [x] Dedup de avisos ya vistos (`job_radar/dedup.py`)
+- [x] Export a Excel con una hoja por perfil (`job_radar/export.py`)
+- [x] Envío del mensaje diario + Excel adjunto por Telegram (`job_radar/notifier.py`, `job_radar/main.py`)
+- [ ] Scrapers reales: Computrabajo Argentina + Bumeran (interfaz lista en
+      `job_radar/sources/`, bloqueado por acceso de red del entorno de dev —
+      ver más abajo)
 - [ ] Workflow con cron (9 y 18 hs Argentina)
+
+Fuentes: se descartó Get on Board (no lo usa el dueño del proyecto) y
+LinkedIn (su `robots.txt` prohíbe rastrear resultados de búsqueda de
+empleo y su ToS prohíbe el scraping). Se usan Computrabajo Argentina y
+Bumeran, con la misma interfaz intercambiable para sumar más después.
+
+### Bloqueo de red en desarrollo
+
+El entorno donde se desarrolla este proyecto no tiene salida a
+`computrabajo.com.ar` ni `bumeran.com.ar`, así que los scrapers reales
+todavía no se escribieron contra HTML real. Para destrabar: ampliar el
+acceso de red del entorno, o pasar HTML de ejemplo de un par de avisos de
+cada sitio para armar el parser y los fixtures de test sobre eso.
 
 ## Setup local
 
