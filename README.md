@@ -28,6 +28,9 @@ Dos formas de usarlo:
 - [x] Workflow con cron (9 y 18 hs Argentina, `.github/workflows/job-radar-cron.yml`)
 - [x] Sitio web con login y perfiles de CV propios por usuario (`api/`,
       `web/`, `supabase/migrations/`), ver sección "Sitio web"
+- [x] Historial de avisos (últimos 15 días) en Supabase + matching contra
+      eso en vez de scrapear en vivo, y armado de perfil por IA subiendo un
+      CV (PDF/DOCX), ver sección "Sitio web"
 
 Fuentes: se descartó Get on Board (no lo usa el dueño del proyecto) y
 LinkedIn (su `robots.txt` prohíbe rastrear resultados de búsqueda de
@@ -70,6 +73,13 @@ entre una corrida y la siguiente. `data/avisos_del_dia.xlsx` no se versiona
 (está en `.gitignore`): es un export descartable que se manda por Telegram
 en cada corrida.
 
+Esta misma corrida sube todos los avisos que scrapea (no solo los nuevos
+para Telegram) a la tabla `job_listings` de Supabase, que es lo que usa el
+sitio web para matchear contra "los últimos 15 días" — ver la sección
+"Sitio web" más abajo. `SUPABASE_URL`/`SUPABASE_ANON_KEY` están hardcodeados
+en el workflow (no son secrets de verdad: es la misma anon key pública que
+ya viaja en el frontend, protegida por RLS y no por secreto).
+
 ## Arquitectura
 
 Ver `job_radar/` para el paquete Python. Cada fuente de avisos implementa
@@ -90,23 +100,40 @@ generar el Excel al momento, sin esperar la corrida de las 9/18 hs.
   `cv_profiles` (`supabase/migrations/`). Row Level Security: cada usuario
   solo ve/edita sus propios perfiles (`auth.uid() = user_id`). El frontend
   habla directo con Supabase para todo el CRUD de perfiles.
-- **Backend** (`api/`, FastAPI, deployado en Railway): un solo endpoint,
-  `POST /generate`. Recibe el access token de Supabase del usuario
-  logueado, lo reenvía tal cual a la REST API de Supabase para traer sus
-  perfiles (RLS filtra, el backend no usa una service key ni tiene lógica
-  de autorización propia), corre los scrapers y el scoring reusando
-  `job_radar/` sin cambios, y devuelve el `.xlsx` armado en la respuesta.
-  Sin dedup: cada click es una foto completa del momento, no "qué hay
-  nuevo desde la última vez" como el bot de cron.
+- **Historial de avisos** (`job_listings`, `supabase/migrations/0002_...`):
+  cada corrida del cron (`job_radar/ingest.py`) sube TODOS los avisos que
+  scrapea (no solo los nuevos para Telegram) a esta tabla via la función
+  `ingest_job_listings` (`SECURITY DEFINER`, upsert por URL). No hay
+  service key: el cron llama a la función con la misma anon key pública
+  del frontend, así que la función queda ejecutable por el rol `anon` —
+  tradeoff aceptado para una herramienta personal sin datos sensibles en
+  juego. Row Level Security: solo usuarios logueados pueden leer. Un
+  segundo RPC (`cleanup_old_job_listings`) borra lo más viejo que 30 días
+  en cada corrida para que la tabla no crezca sin límite.
+- **Backend** (`api/`, FastAPI, deployado en Railway):
+  - `POST /generate`: recibe el access token del usuario, trae sus
+    perfiles y los avisos de `job_listings` de los últimos 15 días (ambos
+    vía REST de Supabase, RLS filtra, sin service key), corre el scoring
+    reusando `job_radar/scoring.py` sin cambios, y devuelve el `.xlsx`.
+  - `POST /profiles/from-cv`: sube un PDF o DOCX, extrae el texto
+    (`pypdf`/`python-docx`) y se lo pasa a DeepSeek (`deepseek-chat`, API
+    compatible con la de OpenAI, `response_format` JSON) para que arme
+    `{name, keywords}` — el mismo formato que ya usa `cv_profiles`.
+    Devuelve el borrador sin guardarlo: el frontend precarga el
+    formulario de perfil para que el usuario lo revise antes de
+    confirmar. Necesita `DEEPSEEK_API_KEY` (mucho más barato que la API
+    de Anthropic para esta tarea simple de extracción).
 - **Frontend** (`web/`, Next.js, deployado en Vercel): login/signup,
-  lista + alta/edición/borrado de perfiles, botón "Generar Excel" que
-  llama al backend y dispara la descarga del archivo que devuelve.
+  lista + alta/edición/borrado de perfiles, botón "Subir CV" (llama a
+  `/profiles/from-cv` y precarga el formulario con lo que sugiere la IA)
+  y botón "Generar Excel" que llama a `/generate` y dispara la descarga.
 
 **Variables de entorno:**
 
 `api/` (Railway):
 - `SUPABASE_URL`, `SUPABASE_ANON_KEY`: del proyecto Supabase.
 - `FRONTEND_ORIGINS`: dominios del frontend separados por coma, para CORS.
+- `DEEPSEEK_API_KEY`: para `/profiles/from-cv` (armado de perfil por IA).
 
 `web/` (Vercel, ver `web/.env.local.example` para desarrollo local):
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`: del mismo

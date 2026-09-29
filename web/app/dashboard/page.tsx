@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useRef, useState, ChangeEvent, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
-import { CvProfile, parseKeywordsText, keywordsToText } from "@/lib/profiles";
+import { CvProfile, ProfileDraft, parseKeywordsText, keywordsToText } from "@/lib/profiles";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL!;
 
@@ -14,8 +14,12 @@ export default function DashboardPage() {
   const [profiles, setProfiles] = useState<CvProfile[]>([]);
   const [loadingProfiles, setLoadingProfiles] = useState(true);
   const [editing, setEditing] = useState<CvProfile | "new" | null>(null);
+  const [newProfileDraft, setNewProfileDraft] = useState<ProfileDraft | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [uploadingCv, setUploadingCv] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const cvInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -50,6 +54,42 @@ export default function DashboardPage() {
   async function handleSignOut() {
     await supabase.auth.signOut();
     router.replace("/login");
+  }
+
+  async function handleUploadCv(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setUploadingCv(true);
+    setUploadError(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("Sesion vencida, volve a iniciar sesion.");
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${BACKEND_URL}/profiles/from-cv`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail || `Error ${response.status} leyendo el CV`);
+      }
+
+      const draft = (await response.json()) as ProfileDraft;
+      setNewProfileDraft(draft);
+      setEditing("new");
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Error subiendo el CV");
+    } finally {
+      setUploadingCv(false);
+    }
   }
 
   async function handleGenerate() {
@@ -102,8 +142,8 @@ export default function DashboardPage() {
           <div>
             <h2>Generar Excel</h2>
             <p className="muted">
-              Corre los scrapers ahora mismo contra tus perfiles y te descarga el Excel con los avisos
-              encontrados (puede tardar unos 20-30 segundos).
+              Matchea tus perfiles contra los avisos scrapeados en los ultimos 15 dias y te descarga
+              el Excel con los resultados.
             </p>
           </div>
         </div>
@@ -121,21 +161,44 @@ export default function DashboardPage() {
       <div className="row-between" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>Tus perfiles de CV</h2>
         {editing === null && (
-          <button type="button" onClick={() => setEditing("new")}>
-            Nuevo perfil
-          </button>
+          <div className="row">
+            <input
+              ref={cvInputRef}
+              type="file"
+              accept=".pdf,.docx"
+              style={{ display: "none" }}
+              onChange={handleUploadCv}
+            />
+            <button
+              type="button"
+              className="secondary"
+              disabled={uploadingCv}
+              onClick={() => cvInputRef.current?.click()}
+            >
+              {uploadingCv ? "Leyendo CV..." : "Subir CV"}
+            </button>
+            <button type="button" onClick={() => setEditing("new")}>
+              Nuevo perfil
+            </button>
+          </div>
         )}
       </div>
+      {uploadError && <p className="error">{uploadError}</p>}
 
       {editing !== null && (
         <ProfileForm
           userId={session.user.id}
           profile={editing === "new" ? null : editing}
+          initial={editing === "new" ? newProfileDraft : null}
           onDone={() => {
             setEditing(null);
+            setNewProfileDraft(null);
             loadProfiles();
           }}
-          onCancel={() => setEditing(null)}
+          onCancel={() => {
+            setEditing(null);
+            setNewProfileDraft(null);
+          }}
         />
       )}
 
@@ -172,16 +235,20 @@ export default function DashboardPage() {
 function ProfileForm({
   userId,
   profile,
+  initial,
   onDone,
   onCancel,
 }: {
   userId: string;
   profile: CvProfile | null;
+  initial?: ProfileDraft | null;
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState(profile?.name ?? "");
-  const [keywordsText, setKeywordsText] = useState(profile ? keywordsToText(profile.keywords) : "");
+  const [name, setName] = useState(profile?.name ?? initial?.name ?? "");
+  const [keywordsText, setKeywordsText] = useState(
+    keywordsToText((profile ?? initial)?.keywords ?? {})
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -207,6 +274,11 @@ function ProfileForm({
 
   return (
     <div className="card">
+      {!profile && initial && (
+        <p className="muted" style={{ marginTop: 0 }}>
+          Perfil armado por IA a partir de tu CV. Revisa las keywords antes de guardar.
+        </p>
+      )}
       <form onSubmit={handleSubmit}>
         <label htmlFor="name">Nombre del perfil</label>
         <input id="name" type="text" required value={name} onChange={(e) => setName(e.target.value)} />

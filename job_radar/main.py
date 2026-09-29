@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import load_config
 from .dedup import SeenStore
 from .export import build_workbook, save_workbook
+from .ingest import cleanup_old_listings, push_listings
 from .models import JobListing
 from .notifier import format_messages, send_document, send_message
 from .scoring import score_listing
@@ -16,6 +17,20 @@ SEEN_PATH = DATA_DIR / "seen.json"
 EXPORT_PATH = DATA_DIR / "avisos_del_dia.xlsx"
 
 
+def _ingest_into_supabase(listings: list[JobListing]) -> None:
+    """Best-effort: si Supabase no esta configurado o falla, no corta la
+    corrida (el mensaje de Telegram no depende de esto)."""
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY")
+    if not supabase_url or not supabase_anon_key:
+        return
+    try:
+        push_listings(supabase_url, supabase_anon_key, listings)
+        cleanup_old_listings(supabase_url, supabase_anon_key)
+    except Exception as exc:  # noqa: BLE001 - nunca debe tumbar la corrida
+        print(f"No se pudieron guardar los avisos en Supabase: {exc}")
+
+
 def run(sources: list[Scraper]) -> None:
     scoring_config = load_config()
     seen = SeenStore(SEEN_PATH)
@@ -23,6 +38,8 @@ def run(sources: list[Scraper]) -> None:
     all_listings: list[JobListing] = []
     for source in sources:
         all_listings.extend(source.fetch())
+
+    _ingest_into_supabase(all_listings)
 
     new_listings = [listing for listing in all_listings if not seen.is_seen(listing.url)]
 

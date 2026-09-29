@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import io
+import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import requests
-from fastapi import FastAPI, Header, HTTPException
+from docx import Document as DocxDocument
+from fastapi import FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from openai import OpenAI
+from pydantic import BaseModel, Field, ValidationError
+from pypdf import PdfReader
 
 from job_radar.config import ProfileConfig, ScoringConfig, load_config
 from job_radar.export import build_workbook
+from job_radar.models import JobListing
 from job_radar.scoring import score_listing
-from job_radar.sources.bumeran import BumeranScraper
-from job_radar.sources.computrabajo import ComputrabajoScraper
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 FRONTEND_ORIGINS = [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+MATCH_WINDOW_DAYS = 15
 
 app = FastAPI(title="job-radar API")
 app.add_middleware(
@@ -26,10 +33,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# DeepSeek expone una API compatible con la de OpenAI (mismo cliente, otro
+# base_url). Se usa solo para /profiles/from-cv, un llamado barato por CV
+# subido. Construido con una key placeholder cuando falta la variable de
+# entorno para que el resto de la app (que no la necesita) no se caiga al
+# importar el modulo; el endpoint valida DEEPSEEK_API_KEY antes de usarlo.
+deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY or "not-configured", base_url="https://api.deepseek.com")
+
 
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+def _require_valid_session(access_token: str) -> None:
+    response = requests.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Token invalido o expirado")
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Falta el header Authorization")
+    return authorization.split(" ", 1)[1]
 
 
 def _fetch_user_profiles(access_token: str) -> list[ProfileConfig]:
@@ -54,11 +84,34 @@ def _fetch_user_profiles(access_token: str) -> list[ProfileConfig]:
     ]
 
 
+def _fetch_recent_listings(access_token: str, since_days: int = MATCH_WINDOW_DAYS) -> list[JobListing]:
+    """Trae los avisos guardados por el cron en los ultimos `since_days` dias
+    (tabla job_listings, poblada por job_radar.ingest). Igual que con los
+    perfiles, RLS filtra: solo usuarios logueados pueden leer."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/job_listings",
+        params={
+            "select": "title,company,location,description,salary_text,url,source",
+            "scraped_at": f"gte.{cutoff}",
+            "order": "scraped_at.desc",
+            "limit": "5000",
+        },
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {access_token}",
+        },
+        timeout=30,
+    )
+    if response.status_code == 401:
+        raise HTTPException(status_code=401, detail="Token invalido o expirado")
+    response.raise_for_status()
+    return [JobListing(**row) for row in response.json()]
+
+
 @app.post("/generate")
 def generate(authorization: str | None = Header(default=None)) -> StreamingResponse:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Falta el header Authorization")
-    access_token = authorization.split(" ", 1)[1]
+    access_token = _bearer_token(authorization)
 
     profiles = _fetch_user_profiles(access_token)
     if not profiles:
@@ -67,9 +120,7 @@ def generate(authorization: str | None = Header(default=None)) -> StreamingRespo
     defaults = load_config()
     scoring_config = ScoringConfig(profiles=profiles, bonus=defaults.bonus, penalties=defaults.penalties)
 
-    listings = []
-    for scraper in (ComputrabajoScraper(), BumeranScraper()):
-        listings.extend(scraper.fetch())
+    listings = _fetch_recent_listings(access_token)
 
     scored = [(listing, score_listing(listing, scoring_config)) for listing in listings]
     scored.sort(key=lambda pair: max((r.score for r in pair[1]), default=0), reverse=True)
@@ -84,3 +135,70 @@ def generate(authorization: str | None = Header(default=None)) -> StreamingRespo
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=avisos_job_radar.xlsx"},
     )
+
+
+class CvProfileExtraction(BaseModel):
+    name: str = Field(description="Nombre corto para el perfil, ej: 'QA Automation' o 'Desarrollador Backend'")
+    keywords: dict[str, float] = Field(
+        description=(
+            "Keywords relevantes para matchear avisos de trabajo en Argentina contra este CV, "
+            "en minusculas y sin acentos, con un peso de 1 a 3 (3 = mas determinante del perfil)"
+        )
+    )
+
+
+def _extract_cv_text(filename: str, content: bytes) -> str:
+    lower = filename.lower()
+    if lower.endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    if lower.endswith(".docx"):
+        document = DocxDocument(io.BytesIO(content))
+        return "\n".join(paragraph.text for paragraph in document.paragraphs)
+    raise HTTPException(status_code=400, detail="Solo se aceptan archivos .pdf o .docx")
+
+
+_CV_SYSTEM_PROMPT = (
+    "Sos un asistente que arma perfiles de busqueda de empleo a partir de un CV. "
+    "Te paso el texto de un CV y tenes que devolver SOLO un JSON (nada de texto "
+    'antes o despues) con esta forma exacta: {"name": "<nombre corto del perfil, '
+    'ej: \'QA Automation\' o \'Desarrollador Backend\'>", "keywords": {"<keyword>": '
+    "<peso entre 1 y 3, 3 = mas determinante>, ...}}. Las keywords van en minusculas "
+    "y sin acentos. Priorizá tecnologias, skills, rol y seniority reales del CV: "
+    "no inventes nada que no este en el texto."
+)
+
+
+def _extract_cv_profile(text: str) -> CvProfileExtraction:
+    if not DEEPSEEK_API_KEY:
+        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY no esta configurada en el backend")
+
+    completion = deepseek_client.chat.completions.create(
+        model="deepseek-chat",
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _CV_SYSTEM_PROMPT},
+            {"role": "user", "content": text[:20000]},
+        ],
+    )
+    raw = completion.choices[0].message.content or "{}"
+    try:
+        return CvProfileExtraction.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=502, detail="La IA no pudo armar un perfil valido, proba de nuevo"
+        ) from exc
+
+
+@app.post("/profiles/from-cv")
+async def profile_from_cv(file: UploadFile, authorization: str | None = Header(default=None)) -> dict:
+    access_token = _bearer_token(authorization)
+    _require_valid_session(access_token)
+
+    content = await file.read()
+    text = _extract_cv_text(file.filename or "", content).strip()
+    if len(text) < 50:
+        raise HTTPException(status_code=400, detail="No se pudo leer texto del CV")
+
+    extracted = _extract_cv_profile(text)
+    return {"name": extracted.name, "keywords": extracted.keywords}
