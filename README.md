@@ -116,13 +116,21 @@ generar el Excel al momento, sin esperar la corrida de las 9/18 hs.
     vía REST de Supabase, RLS filtra, sin service key), corre el scoring
     reusando `job_radar/scoring.py` sin cambios, y devuelve el `.xlsx`.
   - `POST /profiles/from-cv`: sube un PDF o DOCX, extrae el texto
-    (`pypdf`/`python-docx`) y se lo pasa a Gemini (`gemini-3.8-flash` via
-    la Interactions API de `google-genai`, salida JSON estructurada con
-    `response_format`) para que arme `{name, keywords}` — el mismo
-    formato que ya usa `cv_profiles`. Devuelve el borrador sin guardarlo:
-    el frontend precarga el formulario de perfil para que el usuario lo
-    revise antes de confirmar. Necesita `GEMINI_API_KEY` — tier gratuito
-    real (sin tarjeta), conseguida en https://aistudio.google.com/apikey.
+    (`pypdf`/`python-docx`) y se lo pasa a Gemini (`gemini-3.1-flash-lite`
+    via `client.models.generate_content` de `google-genai`, salida JSON
+    estructurada con `response_schema`) para que arme `{name, keywords}` —
+    el mismo formato que ya usa `cv_profiles`. Devuelve el borrador sin
+    guardarlo: el frontend precarga el formulario de perfil para que el
+    usuario lo revise antes de confirmar. Necesita `GEMINI_API_KEY` — tier
+    gratuito real (sin tarjeta), conseguida en
+    https://aistudio.google.com/apikey.
+    Dos detalles no obvios de la API gratuita de Gemini: (1) el modo
+    "Interactions API" (`client.interactions.create`) se cuelga
+    indefinidamente en el tier gratuito, hay que usar el método clásico
+    `generate_content`; (2) `response_schema` no soporta diccionarios de
+    forma libre (`additionalProperties`) en modo Developer API — por eso
+    las keywords se piden como lista de `{keyword, weight}` y se convierten
+    a dict recién en Python, no directo en el schema.
 - **Frontend** (`web/`, Next.js, deployado en Vercel): login/signup,
   lista + alta/edición/borrado de perfiles, botón "Subir CV" (llama a
   `/profiles/from-cv` y precarga el formulario con lo que sugiere la IA)

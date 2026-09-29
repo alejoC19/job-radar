@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -12,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import errors as genai_errors
-from pydantic import BaseModel, Field, ValidationError
+from google.genai import types as genai_types
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from job_radar.config import ProfileConfig, ScoringConfig, load_config
@@ -24,7 +24,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 FRONTEND_ORIGINS = [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 MATCH_WINDOW_DAYS = 15
 
 app = FastAPI(title="job-radar API")
@@ -140,12 +140,25 @@ def generate(authorization: str | None = Header(default=None)) -> StreamingRespo
 
 
 class CvProfileExtraction(BaseModel):
+    name: str
+    keywords: dict[str, float]
+
+
+class _KeywordWeight(BaseModel):
+    keyword: str = Field(description="Keyword en minusculas y sin acentos")
+    weight: float = Field(description="Peso de 1 a 3 (3 = mas determinante del perfil)")
+
+
+class _GeminiCvSchema(BaseModel):
+    """Schema que se le pide a Gemini. Las keywords van en lista, no en dict:
+    el modo gratuito de la API (Gemini Developer API) no soporta objetos con
+    additionalProperties (diccionarios de forma libre) en salida estructurada,
+    solo en modo Enterprise/Vertex. Se convierte a dict despues, para no
+    cambiar el contrato del endpoint."""
+
     name: str = Field(description="Nombre corto para el perfil, ej: 'QA Automation' o 'Desarrollador Backend'")
-    keywords: dict[str, float] = Field(
-        description=(
-            "Keywords relevantes para matchear avisos de trabajo en Argentina contra este CV, "
-            "en minusculas y sin acentos, con un peso de 1 a 3 (3 = mas determinante del perfil)"
-        )
+    keywords: list[_KeywordWeight] = Field(
+        description="Keywords relevantes para matchear avisos de trabajo en Argentina contra este CV"
     )
 
 
@@ -162,12 +175,8 @@ def _extract_cv_text(filename: str, content: bytes) -> str:
 
 _CV_SYSTEM_PROMPT = (
     "Sos un asistente que arma perfiles de busqueda de empleo a partir de un CV. "
-    "Te paso el texto de un CV y tenes que devolver SOLO un JSON (nada de texto "
-    'antes o despues) con esta forma exacta: {"name": "<nombre corto del perfil, '
-    'ej: \'QA Automation\' o \'Desarrollador Backend\'>", "keywords": {"<keyword>": '
-    "<peso entre 1 y 3, 3 = mas determinante>, ...}}. Las keywords van en minusculas "
-    "y sin acentos. Priorizá tecnologias, skills, rol y seniority reales del CV: "
-    "no inventes nada que no este en el texto."
+    "Priorizá tecnologias, skills, rol y seniority reales del CV: no inventes "
+    "nada que no este en el texto. Las keywords van en minusculas y sin acentos."
 )
 
 
@@ -176,26 +185,24 @@ def _extract_cv_profile(text: str) -> CvProfileExtraction:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY no esta configurada en el backend")
 
     try:
-        interaction = gemini_client.interactions.create(
+        response = gemini_client.models.generate_content(
             model=GEMINI_MODEL,
-            system_instruction=_CV_SYSTEM_PROMPT,
-            input=text[:20000],
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": CvProfileExtraction.model_json_schema(),
-            },
+            contents=text[:20000],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=_CV_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=_GeminiCvSchema,
+            ),
         )
     except genai_errors.APIError as exc:
         raise HTTPException(status_code=502, detail=f"Error llamando a la IA: {exc}") from exc
 
-    raw = interaction.output_text or "{}"
-    try:
-        return CvProfileExtraction.model_validate(json.loads(raw))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise HTTPException(
-            status_code=502, detail="La IA no pudo armar un perfil valido, proba de nuevo"
-        ) from exc
+    parsed = response.parsed
+    if not isinstance(parsed, _GeminiCvSchema):
+        raise HTTPException(status_code=502, detail="La IA no pudo armar un perfil valido, proba de nuevo")
+
+    keywords = {item.keyword: item.weight for item in parsed.keywords}
+    return CvProfileExtraction(name=parsed.name, keywords=keywords)
 
 
 @app.post("/profiles/from-cv")
