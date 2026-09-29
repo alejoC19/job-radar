@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -180,22 +181,34 @@ _CV_SYSTEM_PROMPT = (
 )
 
 
+# Códigos transitorios del tier gratuito de Gemini (sobrecarga momentánea o
+# rate limit): vale la pena reintentar en vez de devolver el error al toque.
+_GEMINI_RETRYABLE_CODES = {429, 503}
+_GEMINI_MAX_ATTEMPTS = 3
+_GEMINI_RETRY_BACKOFF_SECONDS = 2
+
+
 def _extract_cv_profile(text: str) -> CvProfileExtraction:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY no esta configurada en el backend")
 
-    try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=text[:20000],
-            config=genai_types.GenerateContentConfig(
-                system_instruction=_CV_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=_GeminiCvSchema,
-            ),
-        )
-    except genai_errors.APIError as exc:
-        raise HTTPException(status_code=502, detail=f"Error llamando a la IA: {exc}") from exc
+    for attempt in range(_GEMINI_MAX_ATTEMPTS):
+        try:
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=text[:20000],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_CV_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=_GeminiCvSchema,
+                ),
+            )
+            break
+        except genai_errors.APIError as exc:
+            is_last_attempt = attempt == _GEMINI_MAX_ATTEMPTS - 1
+            if exc.code not in _GEMINI_RETRYABLE_CODES or is_last_attempt:
+                raise HTTPException(status_code=502, detail=f"Error llamando a la IA: {exc}") from exc
+            time.sleep(_GEMINI_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
     parsed = response.parsed
     if not isinstance(parsed, _GeminiCvSchema):
