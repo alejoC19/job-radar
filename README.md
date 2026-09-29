@@ -1,8 +1,14 @@
 # job-radar
 
-Bot en Python que busca avisos de trabajo en Argentina, los puntúa contra
-3 perfiles de CV y manda un resumen diario por Telegram. No se postula
-automáticamente: solo filtra y avisa.
+Bot en Python que busca avisos de trabajo en Argentina y los puntúa contra
+perfiles de CV. No se postula automáticamente: solo filtra y avisa.
+
+Dos formas de usarlo:
+- **Bot de Telegram** (`job_radar/`): corre solo 2 veces por día contra 3
+  perfiles fijos definidos en `config.yaml`, manda el resumen por Telegram.
+- **Sitio web** (`api/` + `web/`): login, perfiles de CV propios editables
+  desde la web, botón para generar el Excel al toque en vez de esperar la
+  corrida de Telegram. Ver la sección "Sitio web" más abajo.
 
 ## Estado actual
 
@@ -20,6 +26,8 @@ automáticamente: solo filtra y avisa.
       JSON interna (`POST /api/avisos/searchV2` con header `x-site-id: BMAR`)
       que se consume directo con `requests`
 - [x] Workflow con cron (9 y 18 hs Argentina, `.github/workflows/job-radar-cron.yml`)
+- [x] Sitio web con login y perfiles de CV propios por usuario (`api/`,
+      `web/`, `supabase/migrations/`), ver sección "Sitio web"
 
 Fuentes: se descartó Get on Board (no lo usa el dueño del proyecto) y
 LinkedIn (su `robots.txt` prohíbe rastrear resultados de búsqueda de
@@ -68,3 +76,54 @@ Ver `job_radar/` para el paquete Python. Cada fuente de avisos implementa
 la interfaz `Scraper` de `job_radar/sources/base.py` (un `fetch()` que
 devuelve `list[JobListing]`), para poder sumar sitios nuevos sin tocar el
 resto del código.
+
+## Sitio web
+
+Alternativa al bot de Telegram: cada usuario se loguea, carga sus propios
+perfiles de CV (nombre + keywords con pesos, lo mismo que `config.yaml`
+pero editable desde la web y sin tocar código) y aprieta un botón para
+generar el Excel al momento, sin esperar la corrida de las 9/18 hs.
+
+**Arquitectura:**
+
+- **Supabase** (Postgres + Auth): login por email/password y la tabla
+  `cv_profiles` (`supabase/migrations/`). Row Level Security: cada usuario
+  solo ve/edita sus propios perfiles (`auth.uid() = user_id`). El frontend
+  habla directo con Supabase para todo el CRUD de perfiles.
+- **Backend** (`api/`, FastAPI, deployado en Railway): un solo endpoint,
+  `POST /generate`. Recibe el access token de Supabase del usuario
+  logueado, lo reenvía tal cual a la REST API de Supabase para traer sus
+  perfiles (RLS filtra, el backend no usa una service key ni tiene lógica
+  de autorización propia), corre los scrapers y el scoring reusando
+  `job_radar/` sin cambios, y devuelve el `.xlsx` armado en la respuesta.
+  Sin dedup: cada click es una foto completa del momento, no "qué hay
+  nuevo desde la última vez" como el bot de cron.
+- **Frontend** (`web/`, Next.js, deployado en Vercel): login/signup,
+  lista + alta/edición/borrado de perfiles, botón "Generar Excel" que
+  llama al backend y dispara la descarga del archivo que devuelve.
+
+**Variables de entorno:**
+
+`api/` (Railway):
+- `SUPABASE_URL`, `SUPABASE_ANON_KEY`: del proyecto Supabase.
+- `FRONTEND_ORIGINS`: dominios del frontend separados por coma, para CORS.
+
+`web/` (Vercel, ver `web/.env.local.example` para desarrollo local):
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`: del mismo
+  proyecto Supabase.
+- `NEXT_PUBLIC_BACKEND_URL`: URL pública del backend en Railway.
+
+**Desarrollo local del sitio:**
+
+```bash
+cd web
+npm install
+cp .env.local.example .env.local   # completar con tus valores
+npm run dev
+```
+
+```bash
+cd api
+pip install -r ../requirements.txt
+SUPABASE_URL=... SUPABASE_ANON_KEY=... uvicorn api.main:app --reload
+```
