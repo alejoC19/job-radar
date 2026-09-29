@@ -10,6 +10,7 @@ from google.genai import errors as genai_errors  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from api import main  # noqa: E402
 from api.main import app  # noqa: E402
 
 client = TestClient(app)
@@ -123,13 +124,19 @@ def test_profile_from_cv_extracts_profile_from_docx():
             "3 anios de experiencia en testing automatizado.",
         ]
     )
-    fake_interaction = Mock(
-        output_text='{"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}'
+    fake_parsed = main._GeminiCvSchema(
+        name="QA Automation",
+        keywords=[
+            {"keyword": "selenium", "weight": 3},
+            {"keyword": "playwright", "weight": 3},
+            {"keyword": "python", "weight": 2},
+        ],
     )
+    fake_response_obj = Mock(parsed=fake_parsed)
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
             patch("api.main.GEMINI_API_KEY", "fake-key"), \
-            patch("api.main.gemini_client.interactions.create", return_value=fake_interaction) as mock_create:
+            patch("api.main.gemini_client.models.generate_content", return_value=fake_response_obj) as mock_create:
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -139,7 +146,7 @@ def test_profile_from_cv_extracts_profile_from_docx():
     assert response.status_code == 200
     body = response.json()
     assert body == {"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}
-    assert mock_create.call_args.kwargs["model"] == "gemini-3.8-flash"
+    assert mock_create.call_args.kwargs["model"] == "gemini-3.1-flash-lite"
 
 
 def test_profile_from_cv_returns_500_when_gemini_key_missing():
@@ -162,7 +169,7 @@ def test_profile_from_cv_returns_502_when_gemini_api_errors():
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
             patch("api.main.GEMINI_API_KEY", "fake-key"), \
-            patch("api.main.gemini_client.interactions.create", side_effect=api_error):
+            patch("api.main.gemini_client.models.generate_content", side_effect=api_error):
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -172,13 +179,13 @@ def test_profile_from_cv_returns_502_when_gemini_api_errors():
     assert response.status_code == 502
 
 
-def test_profile_from_cv_returns_502_on_malformed_ai_json():
+def test_profile_from_cv_returns_502_when_ai_output_unparseable():
     docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
-    fake_interaction = Mock(output_text="esto no es json")
+    fake_response_obj = Mock(parsed=None)
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
             patch("api.main.GEMINI_API_KEY", "fake-key"), \
-            patch("api.main.gemini_client.interactions.create", return_value=fake_interaction):
+            patch("api.main.gemini_client.models.generate_content", return_value=fake_response_obj):
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
