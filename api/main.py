@@ -10,7 +10,8 @@ from docx import Document as DocxDocument
 from fastapi import FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from openai import OpenAI, OpenAIError
+from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
 
@@ -22,7 +23,8 @@ from job_radar.scoring import score_listing
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 FRONTEND_ORIGINS = [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-3.8-flash"
 MATCH_WINDOW_DAYS = 15
 
 app = FastAPI(title="job-radar API")
@@ -33,12 +35,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DeepSeek expone una API compatible con la de OpenAI (mismo cliente, otro
-# base_url). Se usa solo para /profiles/from-cv, un llamado barato por CV
-# subido. Construido con una key placeholder cuando falta la variable de
-# entorno para que el resto de la app (que no la necesita) no se caiga al
-# importar el modulo; el endpoint valida DEEPSEEK_API_KEY antes de usarlo.
-deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY or "not-configured", base_url="https://api.deepseek.com")
+# Gemini tiene tier gratuito de verdad (sin tarjeta, con cuota diaria
+# generosa via Google AI Studio) - se usa solo para /profiles/from-cv, un
+# llamado por CV subido. Construido con una key placeholder cuando falta la
+# variable de entorno para que el resto de la app (que no la necesita) no se
+# caiga al importar el modulo; el endpoint valida GEMINI_API_KEY antes de usarlo.
+gemini_client = genai.Client(api_key=GEMINI_API_KEY or "not-configured")
 
 
 @app.get("/health")
@@ -170,22 +172,24 @@ _CV_SYSTEM_PROMPT = (
 
 
 def _extract_cv_profile(text: str) -> CvProfileExtraction:
-    if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY no esta configurada en el backend")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no esta configurada en el backend")
 
     try:
-        completion = deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _CV_SYSTEM_PROMPT},
-                {"role": "user", "content": text[:20000]},
-            ],
+        interaction = gemini_client.interactions.create(
+            model=GEMINI_MODEL,
+            system_instruction=_CV_SYSTEM_PROMPT,
+            input=text[:20000],
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": CvProfileExtraction.model_json_schema(),
+            },
         )
-    except OpenAIError as exc:
+    except genai_errors.APIError as exc:
         raise HTTPException(status_code=502, detail=f"Error llamando a la IA: {exc}") from exc
 
-    raw = completion.choices[0].message.content or "{}"
+    raw = interaction.output_text or "{}"
     try:
         return CvProfileExtraction.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValidationError) as exc:

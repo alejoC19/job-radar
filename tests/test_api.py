@@ -6,7 +6,7 @@ os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "anon-key")
 
 from docx import Document  # noqa: E402
-from openai import OpenAIError  # noqa: E402
+from google.genai import errors as genai_errors  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -123,14 +123,13 @@ def test_profile_from_cv_extracts_profile_from_docx():
             "3 anios de experiencia en testing automatizado.",
         ]
     )
-    fake_completion = Mock()
-    fake_completion.choices = [
-        Mock(message=Mock(content='{"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}'))
-    ]
+    fake_interaction = Mock(
+        output_text='{"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}'
+    )
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
-            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
-            patch("api.main.deepseek_client.chat.completions.create", return_value=fake_completion) as mock_create:
+            patch("api.main.GEMINI_API_KEY", "fake-key"), \
+            patch("api.main.gemini_client.interactions.create", return_value=fake_interaction) as mock_create:
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -140,14 +139,14 @@ def test_profile_from_cv_extracts_profile_from_docx():
     assert response.status_code == 200
     body = response.json()
     assert body == {"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}
-    assert mock_create.call_args.kwargs["model"] == "deepseek-chat"
+    assert mock_create.call_args.kwargs["model"] == "gemini-3.8-flash"
 
 
-def test_profile_from_cv_returns_500_when_deepseek_key_missing():
+def test_profile_from_cv_returns_500_when_gemini_key_missing():
     docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
-            patch("api.main.DEEPSEEK_API_KEY", None):
+            patch("api.main.GEMINI_API_KEY", None):
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -157,15 +156,13 @@ def test_profile_from_cv_returns_500_when_deepseek_key_missing():
     assert response.status_code == 500
 
 
-def test_profile_from_cv_returns_502_when_deepseek_api_errors():
+def test_profile_from_cv_returns_502_when_gemini_api_errors():
     docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+    api_error = genai_errors.APIError(code=429, response_json={"error": {"message": "Rate limit exceeded"}})
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
-            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
-            patch(
-                "api.main.deepseek_client.chat.completions.create",
-                side_effect=OpenAIError("Insufficient Balance"),
-            ):
+            patch("api.main.GEMINI_API_KEY", "fake-key"), \
+            patch("api.main.gemini_client.interactions.create", side_effect=api_error):
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -177,12 +174,11 @@ def test_profile_from_cv_returns_502_when_deepseek_api_errors():
 
 def test_profile_from_cv_returns_502_on_malformed_ai_json():
     docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
-    fake_completion = Mock()
-    fake_completion.choices = [Mock(message=Mock(content="esto no es json"))]
+    fake_interaction = Mock(output_text="esto no es json")
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
-            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
-            patch("api.main.deepseek_client.chat.completions.create", return_value=fake_completion):
+            patch("api.main.GEMINI_API_KEY", "fake-key"), \
+            patch("api.main.gemini_client.interactions.create", return_value=fake_interaction):
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
