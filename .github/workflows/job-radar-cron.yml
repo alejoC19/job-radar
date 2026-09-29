@@ -34,6 +34,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # No son secrets de verdad: SUPABASE_ANON_KEY es la misma clave publica
+          # que ya viaja embebida en el frontend (protegida por RLS, no por
+          # secreto). Se guardan avisos scrapeados en job_listings para que el
+          # sitio pueda matchear contra "los ultimos 15 dias" sin scrapear en vivo.
+          SUPABASE_URL: https://dpmwiuumpqiuhhfjrkol.supabase.co
+          SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwbXdpdXVtcHFpdWhoZmpya29sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA2MTA4NTQsImV4cCI6MjEwNjE4Njg1NH0.TXKl7dn_T_B_N5vHTC_NqduU3ZTT2cfO3wX5otc6kDc
         run: python -m job_radar.main
 
       - name: Persistir avisos ya notificados

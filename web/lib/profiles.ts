@@ -5,6 +5,12 @@ export type CvProfile = {
   created_at: string;
 };
 
+/** Perfil sugerido por la IA a partir de un CV subido, antes de guardarlo. */
+export type ProfileDraft = {
+  name: string;
+  keywords: Record<string, number>;
+};
+
 /** Parsea lineas "keyword: peso" (una por renglon) a un dict {keyword: peso}. */
 export function parseKeywordsText(text: string): Record<string, number> {
   const keywords: Record<string, number> = {};
