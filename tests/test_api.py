@@ -6,6 +6,7 @@ os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "anon-key")
 
 from docx import Document  # noqa: E402
+from openai import OpenAIError  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -154,6 +155,24 @@ def test_profile_from_cv_returns_500_when_deepseek_key_missing():
         )
 
     assert response.status_code == 500
+
+
+def test_profile_from_cv_returns_502_when_deepseek_api_errors():
+    docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+
+    with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
+            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
+            patch(
+                "api.main.deepseek_client.chat.completions.create",
+                side_effect=OpenAIError("Insufficient Balance"),
+            ):
+        response = client.post(
+            "/profiles/from-cv",
+            headers={"Authorization": "Bearer token"},
+            files={"file": ("cv.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+
+    assert response.status_code == 502
 
 
 def test_profile_from_cv_returns_502_on_malformed_ai_json():

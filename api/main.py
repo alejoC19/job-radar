@@ -10,7 +10,7 @@ from docx import Document as DocxDocument
 from fastapi import FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
 
@@ -173,14 +173,18 @@ def _extract_cv_profile(text: str) -> CvProfileExtraction:
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY no esta configurada en el backend")
 
-    completion = deepseek_client.chat.completions.create(
-        model="deepseek-chat",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": _CV_SYSTEM_PROMPT},
-            {"role": "user", "content": text[:20000]},
-        ],
-    )
+    try:
+        completion = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _CV_SYSTEM_PROMPT},
+                {"role": "user", "content": text[:20000]},
+            ],
+        )
+    except OpenAIError as exc:
+        raise HTTPException(status_code=502, detail=f"Error llamando a la IA: {exc}") from exc
+
     raw = completion.choices[0].message.content or "{}"
     try:
         return CvProfileExtraction.model_validate(json.loads(raw))
