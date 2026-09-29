@@ -165,11 +165,11 @@ def test_profile_from_cv_returns_500_when_gemini_key_missing():
 
 def test_profile_from_cv_returns_502_when_gemini_api_errors():
     docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
-    api_error = genai_errors.APIError(code=429, response_json={"error": {"message": "Rate limit exceeded"}})
+    api_error = genai_errors.APIError(code=400, response_json={"error": {"message": "Bad request"}})
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
             patch("api.main.GEMINI_API_KEY", "fake-key"), \
-            patch("api.main.gemini_client.models.generate_content", side_effect=api_error):
+            patch("api.main.gemini_client.models.generate_content", side_effect=api_error) as mock_create:
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -177,6 +177,51 @@ def test_profile_from_cv_returns_502_when_gemini_api_errors():
         )
 
     assert response.status_code == 502
+    assert mock_create.call_count == 1
+
+
+def test_profile_from_cv_retries_on_503_then_succeeds():
+    docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+    overloaded = genai_errors.APIError(code=503, response_json={"error": {"message": "High demand"}})
+    fake_parsed = main._GeminiCvSchema(
+        name="QA Automation",
+        keywords=[{"keyword": "selenium", "weight": 3}],
+    )
+    fake_response_obj = Mock(parsed=fake_parsed)
+
+    with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
+            patch("api.main.GEMINI_API_KEY", "fake-key"), \
+            patch("api.main.time.sleep"), \
+            patch(
+                "api.main.gemini_client.models.generate_content",
+                side_effect=[overloaded, fake_response_obj],
+            ) as mock_create:
+        response = client.post(
+            "/profiles/from-cv",
+            headers={"Authorization": "Bearer token"},
+            files={"file": ("cv.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+
+    assert response.status_code == 200
+    assert mock_create.call_count == 2
+
+
+def test_profile_from_cv_returns_502_after_exhausting_retries_on_503():
+    docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+    overloaded = genai_errors.APIError(code=503, response_json={"error": {"message": "High demand"}})
+
+    with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
+            patch("api.main.GEMINI_API_KEY", "fake-key"), \
+            patch("api.main.time.sleep"), \
+            patch("api.main.gemini_client.models.generate_content", side_effect=overloaded) as mock_create:
+        response = client.post(
+            "/profiles/from-cv",
+            headers={"Authorization": "Bearer token"},
+            files={"file": ("cv.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+
+    assert response.status_code == 502
+    assert mock_create.call_count == main._GEMINI_MAX_ATTEMPTS
 
 
 def test_profile_from_cv_returns_502_when_ai_output_unparseable():
