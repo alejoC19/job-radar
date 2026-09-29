@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
 import requests
-from anthropic import Anthropic
 from docx import Document as DocxDocument
 from fastapi import FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from openai import OpenAI
+from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
 
 from job_radar.config import ProfileConfig, ScoringConfig, load_config
@@ -21,6 +22,7 @@ from job_radar.scoring import score_listing
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 FRONTEND_ORIGINS = [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 MATCH_WINDOW_DAYS = 15
 
 app = FastAPI(title="job-radar API")
@@ -31,7 +33,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-anthropic_client = Anthropic()
+# DeepSeek expone una API compatible con la de OpenAI (mismo cliente, otro
+# base_url). Se usa solo para /profiles/from-cv, un llamado barato por CV
+# subido. Construido con una key placeholder cuando falta la variable de
+# entorno para que el resto de la app (que no la necesita) no se caiga al
+# importar el modulo; el endpoint valida DEEPSEEK_API_KEY antes de usarlo.
+deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY or "not-configured", base_url="https://api.deepseek.com")
 
 
 @app.get("/health")
@@ -151,6 +158,38 @@ def _extract_cv_text(filename: str, content: bytes) -> str:
     raise HTTPException(status_code=400, detail="Solo se aceptan archivos .pdf o .docx")
 
 
+_CV_SYSTEM_PROMPT = (
+    "Sos un asistente que arma perfiles de busqueda de empleo a partir de un CV. "
+    "Te paso el texto de un CV y tenes que devolver SOLO un JSON (nada de texto "
+    'antes o despues) con esta forma exacta: {"name": "<nombre corto del perfil, '
+    'ej: \'QA Automation\' o \'Desarrollador Backend\'>", "keywords": {"<keyword>": '
+    "<peso entre 1 y 3, 3 = mas determinante>, ...}}. Las keywords van en minusculas "
+    "y sin acentos. Priorizá tecnologias, skills, rol y seniority reales del CV: "
+    "no inventes nada que no este en el texto."
+)
+
+
+def _extract_cv_profile(text: str) -> CvProfileExtraction:
+    if not DEEPSEEK_API_KEY:
+        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY no esta configurada en el backend")
+
+    completion = deepseek_client.chat.completions.create(
+        model="deepseek-chat",
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _CV_SYSTEM_PROMPT},
+            {"role": "user", "content": text[:20000]},
+        ],
+    )
+    raw = completion.choices[0].message.content or "{}"
+    try:
+        return CvProfileExtraction.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=502, detail="La IA no pudo armar un perfil valido, proba de nuevo"
+        ) from exc
+
+
 @app.post("/profiles/from-cv")
 async def profile_from_cv(file: UploadFile, authorization: str | None = Header(default=None)) -> dict:
     access_token = _bearer_token(authorization)
@@ -161,19 +200,5 @@ async def profile_from_cv(file: UploadFile, authorization: str | None = Header(d
     if len(text) < 50:
         raise HTTPException(status_code=400, detail="No se pudo leer texto del CV")
 
-    response = anthropic_client.messages.parse(
-        model="claude-opus-5-5",
-        max_tokens=2000,
-        system=(
-            "Sos un asistente que arma perfiles de busqueda de empleo a partir de un CV. "
-            "Te paso el texto de un CV y tenes que devolver un nombre corto para el perfil "
-            "y un diccionario de keywords relevantes para matchear avisos de trabajo en "
-            "Argentina, con un peso de 1 a 3 (3 = mas determinante). Priorizá tecnologias, "
-            "skills, rol y seniority reales del CV (no inventes nada que no este), en "
-            "minusculas y sin acentos."
-        ),
-        messages=[{"role": "user", "content": text[:20000]}],
-        output_format=CvProfileExtraction,
-    )
-    extracted = response.parsed_output
+    extracted = _extract_cv_profile(text)
     return {"name": extracted.name, "keywords": extracted.keywords}

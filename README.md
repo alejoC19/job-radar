@@ -116,11 +116,13 @@ generar el Excel al momento, sin esperar la corrida de las 9/18 hs.
     vía REST de Supabase, RLS filtra, sin service key), corre el scoring
     reusando `job_radar/scoring.py` sin cambios, y devuelve el `.xlsx`.
   - `POST /profiles/from-cv`: sube un PDF o DOCX, extrae el texto
-    (`pypdf`/`python-docx`) y se lo pasa a Claude (`claude-opus-5-5`, con
-    `output_format` estructurado) para que arme `{name, keywords}` —
-    el mismo formato que ya usa `cv_profiles`. Devuelve el borrador sin
-    guardarlo: el frontend precarga el formulario de perfil para que el
-    usuario lo revise antes de confirmar. Necesita `ANTHROPIC_API_KEY`.
+    (`pypdf`/`python-docx`) y se lo pasa a DeepSeek (`deepseek-chat`, API
+    compatible con la de OpenAI, `response_format` JSON) para que arme
+    `{name, keywords}` — el mismo formato que ya usa `cv_profiles`.
+    Devuelve el borrador sin guardarlo: el frontend precarga el
+    formulario de perfil para que el usuario lo revise antes de
+    confirmar. Necesita `DEEPSEEK_API_KEY` (mucho más barato que la API
+    de Anthropic para esta tarea simple de extracción).
 - **Frontend** (`web/`, Next.js, deployado en Vercel): login/signup,
   lista + alta/edición/borrado de perfiles, botón "Subir CV" (llama a
   `/profiles/from-cv` y precarga el formulario con lo que sugiere la IA)
@@ -131,7 +133,7 @@ generar el Excel al momento, sin esperar la corrida de las 9/18 hs.
 `api/` (Railway):
 - `SUPABASE_URL`, `SUPABASE_ANON_KEY`: del proyecto Supabase.
 - `FRONTEND_ORIGINS`: dominios del frontend separados por coma, para CORS.
-- `ANTHROPIC_API_KEY`: para `/profiles/from-cv` (armado de perfil por IA).
+- `DEEPSEEK_API_KEY`: para `/profiles/from-cv` (armado de perfil por IA).
 
 `web/` (Vercel, ver `web/.env.local.example` para desarrollo local):
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`: del mismo

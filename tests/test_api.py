@@ -122,13 +122,14 @@ def test_profile_from_cv_extracts_profile_from_docx():
             "3 anios de experiencia en testing automatizado.",
         ]
     )
-    fake_parsed = Mock()
-    fake_parsed.name = "QA Automation"
-    fake_parsed.keywords = {"selenium": 3, "playwright": 3, "python": 2}
-    fake_message = Mock(parsed_output=fake_parsed)
+    fake_completion = Mock()
+    fake_completion.choices = [
+        Mock(message=Mock(content='{"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}'))
+    ]
 
     with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
-            patch("api.main.anthropic_client.messages.parse", return_value=fake_message) as mock_parse:
+            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
+            patch("api.main.deepseek_client.chat.completions.create", return_value=fake_completion) as mock_create:
         response = client.post(
             "/profiles/from-cv",
             headers={"Authorization": "Bearer token"},
@@ -138,4 +139,35 @@ def test_profile_from_cv_extracts_profile_from_docx():
     assert response.status_code == 200
     body = response.json()
     assert body == {"name": "QA Automation", "keywords": {"selenium": 3, "playwright": 3, "python": 2}}
-    assert mock_parse.call_args.kwargs["output_format"].__name__ == "CvProfileExtraction"
+    assert mock_create.call_args.kwargs["model"] == "deepseek-chat"
+
+
+def test_profile_from_cv_returns_500_when_deepseek_key_missing():
+    docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+
+    with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
+            patch("api.main.DEEPSEEK_API_KEY", None):
+        response = client.post(
+            "/profiles/from-cv",
+            headers={"Authorization": "Bearer token"},
+            files={"file": ("cv.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+
+    assert response.status_code == 500
+
+
+def test_profile_from_cv_returns_502_on_malformed_ai_json():
+    docx_bytes = make_docx_bytes(["Juan Perez - QA Automation Engineer, Selenium y Python."])
+    fake_completion = Mock()
+    fake_completion.choices = [Mock(message=Mock(content="esto no es json"))]
+
+    with patch("api.main.requests.get", return_value=fake_response(status_code=200)), \
+            patch("api.main.DEEPSEEK_API_KEY", "fake-key"), \
+            patch("api.main.deepseek_client.chat.completions.create", return_value=fake_completion):
+        response = client.post(
+            "/profiles/from-cv",
+            headers={"Authorization": "Bearer token"},
+            files={"file": ("cv.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+
+    assert response.status_code == 502
